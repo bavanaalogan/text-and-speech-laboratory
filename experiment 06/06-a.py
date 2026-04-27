@@ -1,60 +1,51 @@
-import nltk, torch
-from nltk.corpus import twitter_samples
-from transformers import DistilBertTokenizer, DistilBertForSequenceClassification
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+from transformers import *
+from datasets import load_dataset
+from sklearn.metrics import accuracy_score
+import numpy as np
 
-nltk.download('twitter_samples')
+# Small dataset
+data = load_dataset("imdb")
+train = data["train"].select(range(200))
+test = data["test"].select(range(50))
 
-# ── LOAD DATA ──
-pos = twitter_samples.strings('positive_tweets.json')
-neg = twitter_samples.strings('negative_tweets.json')
+tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
 
-texts = pos[:500] + neg[:500]   # small subset for speed
-labels = torch.tensor([1]*500 + [0]*500)
+def tokenize(x, max_len):
+    return tokenizer(x["text"], padding="max_length", truncation=True, max_length=max_len)
 
-# ── SPLIT ──
-X_train, X_test, y_train, y_test = train_test_split(texts, labels, test_size=0.2)
+# -------- CONFIG 1 --------
+train1 = train.map(lambda x: tokenize(x, 128), batched=True)
+test1 = test.map(lambda x: tokenize(x, 128), batched=True)
 
-# ── TOKENIZER ──
-tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+train1.set_format("torch", columns=["input_ids","attention_mask","label"])
+test1.set_format("torch", columns=["input_ids","attention_mask","label"])
 
-def run(batch_size, epochs, max_len, name):
+model1 = DistilBertForSequenceClassification.from_pretrained("distilbert-base-uncased")
 
-    train_enc = tokenizer(X_train, padding=True, truncation=True, max_length=max_len, return_tensors='pt')
-    test_enc  = tokenizer(X_test,  padding=True, truncation=True, max_length=max_len, return_tensors='pt')
+args1 = TrainingArguments(output_dir="./c1", num_train_epochs=1, per_device_train_batch_size=16)
 
-    model = DistilBertForSequenceClassification.from_pretrained('distilbert-base-uncased', num_labels=2)
-    opt = torch.optim.AdamW(model.parameters(), lr=3e-5)
+trainer1 = Trainer(model=model1, args=args1, train_dataset=train1)
+trainer1.train()
 
-    # ── TRAIN ──
-    model.train()
-    for e in range(epochs):
-        loss_total = 0
-        for i in range(0, len(X_train), batch_size):
-            batch = {k: v[i:i+batch_size] for k, v in train_enc.items()}
-            y = y_train[i:i+batch_size]
-
-            opt.zero_grad()
-            out = model(**batch, labels=y)
-            out.loss.backward()
-            opt.step()
-
-            loss_total += out.loss.item()
-
-        print(f"{name} Epoch {e+1} Loss:", round(loss_total,3))
-
-    # ── TEST ──
-    model.eval()
-    with torch.no_grad():
-        out = model(**test_enc)
-        preds = torch.argmax(out.logits, dim=1)
-
-    print(f"\n{name} Report:")
-    print(classification_report(y_test, preds))
-    print("="*40)
+pred1 = trainer1.predict(test1)
+acc1 = accuracy_score(pred1.label_ids, np.argmax(pred1.predictions, axis=1))
+print("Config1 Accuracy:", acc1)
 
 
-# ── CONFIGS ──
-run(2, 2, 32, "Config 1")
-run(4, 4, 64, "Config 2")
+# -------- CONFIG 2 --------
+train2 = train.map(lambda x: tokenize(x, 64), batched=True)
+test2 = test.map(lambda x: tokenize(x, 64), batched=True)
+
+train2.set_format("torch", columns=["input_ids","attention_mask","label"])
+test2.set_format("torch", columns=["input_ids","attention_mask","label"])
+
+model2 = DistilBertForSequenceClassification.from_pretrained("distilbert-base-uncased")
+
+args2 = TrainingArguments(output_dir="./c2", num_train_epochs=2, per_device_train_batch_size=32)
+
+trainer2 = Trainer(model=model2, args=args2, train_dataset=train2)
+trainer2.train()
+
+pred2 = trainer2.predict(test2)
+acc2 = accuracy_score(pred2.label_ids, np.argmax(pred2.predictions, axis=1))
+print("Config2 Accuracy:", acc2)
